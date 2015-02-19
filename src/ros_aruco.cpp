@@ -76,11 +76,8 @@ public:
   ImageConverter()
       : it_(nh_), is_new(false)
   {
-    cout << "Subscribing to image_raw" << endl;
     // subscribe to input video feed and publish output video feed
     image_sub_ = it_.subscribe("/camera/image_raw", 1, &ImageConverter::imageCb, this);
-    // image_sub_ = it_.subscribe("/camera/image_raw", 1, test_recv_img);
-    cout << "Subscribed." << endl;
   }
 
   ~ImageConverter()
@@ -99,7 +96,6 @@ public:
 
   void imageCb(const sensor_msgs::ImageConstPtr& msg)
   {
-    cout << "GOT NEW IMAGE" << endl;
     cv_bridge::CvImagePtr cv_ptr;
     try
     {
@@ -158,11 +154,13 @@ int main(int argc,char **argv){
 
 	// Read first image to get the dimensions
 	// TheVideoCapturer>>TheInputImage;
-    cout << "FOOO" << endl;
     ImageConverter image_topic;
-    cout << "BAR" << endl;
-    TheInputImage = image_topic.getCurrentImage();
 
+    while (!image_topic.isImageNew()) {
+        ros::spinOnce();
+    }
+    cout << "Got first image!!" << endl;
+    TheInputImage = image_topic.getCurrentImage();
 
 	// Read camera parameters if passed
 	if (TheIntrinsicFile!="") {
@@ -195,16 +193,14 @@ int main(int argc,char **argv){
 	// Capture until press ESC or until the end of the video
 	while ((key != 'x') && (key!=27) && ros::ok()){
 
-                ros::spinOnce();
+        ros::spinOnce();
 
         if (image_topic.isImageNew()) {
-            cout << "New image" << endl;
             TheInputImage = image_topic.getCurrentImage();
-			// Copy image
 			index++; // Number of images captured
 			double tick = (double)getTickCount();// For checking the speed
 
-                        // Detection of markers in the image passed
+            // Detection of markers in the image passed
 			MDetector.detect(TheInputImage,TheMarkers,TheCameraParameters,TheMarkerSize);
 
 			// Check the speed by calculating the mean speed of all iterations
@@ -214,11 +210,12 @@ int main(int argc,char **argv){
 			// Show the detection time
 			// cout<<"Time detection="<<1000*AvrgTime.first/AvrgTime.second<<" milliseconds"<<endl;
 
-                        TheInputImage.copyTo(TheInputImageCopy);
+            // Copy image
+            TheInputImage.copyTo(TheInputImageCopy);
 
 			geometry_msgs::Pose msg;
 
-			float x_t, y_t, z_t;
+			double x_t, y_t, z_t;
 			float roll,yaw,pitch;
 			bool found = (TheMarkers.size()>0)?true:false;
 
@@ -235,6 +232,8 @@ int main(int argc,char **argv){
 				pitch   = -atan2(rot_mat.at<float>(2,0), rot_mat.at<float>(2,1));
 				yaw     = acos(rot_mat.at<float>(2,2));
 				roll    = -atan2(rot_mat.at<float>(0,2), rot_mat.at<float>(1,2));
+				printf( "Angles (deg) found: roll:%5.2f pitch:%5.2f yaw:%5.2f \n",
+                        roll, pitch, yaw);
 			}else {
 				// x_t = 0.0;
 				// y_t = 0.0;
@@ -242,7 +241,7 @@ int main(int argc,char **argv){
 				// yaw  = 0.0;
 				// roll = 0.0;
 				// pitch = 0.0;
-                                printf("Marker _NOT_ found\n");
+                printf("Marker _NOT_ found\n");
 			}
 
 			// Marker rotation should be initially zero (just for convenience)
@@ -252,8 +251,9 @@ int main(int argc,char **argv){
 
 			// See: http://en.wikipedia.org/wiki/Flight_dynamics
 			if (found){
-				printf( "Angles (deg) wrt Flight Dynamics: roll:%5.2f pitch:%5.2f yaw:%5.2f \n", (roll-r_off)*(180.0/CV_PI), (pitch-p_off)*(180.0/CV_PI), (yaw-y_off)*(180.0/CV_PI));
-				printf( "       Marker distance in metres:  x_d:%5.2f   y_d:%5.2f z_d:%5.2f \n", x_t, y_t, z_t);
+				printf( "Angles (deg) wrt Flight Dynamics: roll:%5.2f pitch:%5.2f yaw:%5.2f \n",
+                        (roll-r_off)*(180.0/CV_PI), (pitch-p_off)*(180.0/CV_PI), (yaw-y_off)*(180.0/CV_PI));
+				printf( "\tMarker distance in metres: x_d:%f\ty_d:%f\tz_d:%f\n", x_t, y_t, z_t);
 			}
 
 			if (ros::ok()){
@@ -278,10 +278,14 @@ int main(int argc,char **argv){
 			}*/
 			// Draw a 3d cube in each marker if there is 3d info
 
-                       if (TheCameraParameters.isValid()){
+            if (TheCameraParameters.isValid()){
 				for (unsigned int i=0;i<TheMarkers.size();i++) {
-					CvDrawingUtils::draw3dCube(TheInputImageCopy,TheMarkers[i],TheCameraParameters);
-					CvDrawingUtils::draw3dAxis(TheInputImageCopy,TheMarkers[i],TheCameraParameters);
+					CvDrawingUtils::draw3dCube(TheInputImageCopy,
+                                               TheMarkers[i],
+                                               TheCameraParameters);
+					CvDrawingUtils::draw3dAxis(TheInputImageCopy,
+                                               TheMarkers[i],
+                                               TheCameraParameters);
 				}
 			}
 
