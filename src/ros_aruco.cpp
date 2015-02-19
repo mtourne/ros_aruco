@@ -60,19 +60,27 @@ int iThresParam1,iThresParam2;
 int waitTime=0;
 bool update_images;
 
+void test_recv_img(const sensor_msgs::ImageConstPtr& msg) {
+    cout << "received image" << endl;
+}
+
 class ImageConverter
 {
   ros::NodeHandle nh_;
   image_transport::ImageTransport it_;
   image_transport::Subscriber image_sub_;
   Mat img;
+  bool is_new;
 
 public:
   ImageConverter()
-    : it_(nh_)
+      : it_(nh_), is_new(false)
   {
+    cout << "Subscribing to image_raw" << endl;
     // subscribe to input video feed and publish output video feed
-    image_sub_ = it_.subscribe("/ar_follow/image", 1, &ImageConverter::imageCb, this);
+    image_sub_ = it_.subscribe("/camera/image_raw", 1, &ImageConverter::imageCb, this);
+    // image_sub_ = it_.subscribe("/camera/image_raw", 1, test_recv_img);
+    cout << "Subscribed." << endl;
   }
 
   ~ImageConverter()
@@ -81,11 +89,17 @@ public:
   }
 
   cv::Mat getCurrentImage() {
+         is_new = false;
         return img;
+  }
+
+  bool isImageNew() {
+      return is_new;
   }
 
   void imageCb(const sensor_msgs::ImageConstPtr& msg)
   {
+    cout << "GOT NEW IMAGE" << endl;
     cv_bridge::CvImagePtr cv_ptr;
     try
     {
@@ -98,6 +112,7 @@ public:
     }
 
     img = cv_ptr->image;
+    is_new = true;
   }
 
 };
@@ -128,15 +143,26 @@ int main(int argc,char **argv){
 		return 0;
 	}
 
-	TheVideoCapturer.open(0);
-	// Check video is open
-	if (!TheVideoCapturer.isOpened()) {
-		cerr<<"Could not open video"<<endl;
-		return 0;
-	}
+	// TheVideoCapturer.open(0);
+	// // Check video is open
+	// if (!TheVideoCapturer.isOpened()) {
+	// 	cerr<<"Could not open video"<<endl;
+	// 	return 0;
+	// }
+
+
+	// ROS messaging init
+	ros::init(argc, argv, "aruco_tf_publisher");
+	ros::NodeHandle n;
+	ros::Rate loop_rate(100);
 
 	// Read first image to get the dimensions
-	TheVideoCapturer>>TheInputImage;
+	// TheVideoCapturer>>TheInputImage;
+    cout << "FOOO" << endl;
+    ImageConverter image_topic;
+    cout << "BAR" << endl;
+    TheInputImage = image_topic.getCurrentImage();
+
 
 	// Read camera parameters if passed
 	if (TheIntrinsicFile!="") {
@@ -162,21 +188,18 @@ int main(int argc,char **argv){
 	char key=0;
 	int index=0;
 
-	// ROS messaging init
-	ros::init(argc, argv, "aruco_tf_publisher");
-	ros::NodeHandle n;
-	ros::Rate loop_rate(100);
-
 	// Publish pose message and buffer up to 100 messages
 	ros::Publisher pose_pub = n.advertise<geometry_msgs::Pose>("aruco_pose", 100);
 	tf::TransformBroadcaster broadcaster;
 
 	// Capture until press ESC or until the end of the video
-	while ((key != 'x') && (key!=27) && TheVideoCapturer.grab() && ros::ok()){
+	while ((key != 'x') && (key!=27) && ros::ok()){
 
                 ros::spinOnce();
 
-		if (TheVideoCapturer.retrieve(TheInputImage)){
+        if (image_topic.isImageNew()) {
+            cout << "New image" << endl;
+            TheInputImage = image_topic.getCurrentImage();
 			// Copy image
 			index++; // Number of images captured
 			double tick = (double)getTickCount();// For checking the speed
@@ -267,9 +290,10 @@ int main(int argc,char **argv){
 				cv::imshow("INPUT IMAGE",TheInputImageCopy);
 				cv::imshow("THRESHOLD IMAGE",MDetector.getThresholdedImage());
 			}
-		}else {
-		      printf("retrieve failed\n");
 		}
+        // else {
+        //     printf("retrieve failed\n");
+		// }
 
 		key=cv::waitKey(1);
 
