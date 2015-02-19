@@ -32,14 +32,19 @@ or implied, of Rafael Muñoz Salinas.
 #include <sstream>
 #include <math.h>
 #include <unistd.h>
-#include "aruco.h"
-#include "cvdrawingutils.h"
-#include "ros/ros.h"
-#include <tf/transform_broadcaster.h>
-#include <geometry_msgs/Pose.h>
+
+#include <ros/ros.h>
+#include <nav_msgs/Odometry.h>
+#include <geometry_msgs/Point.h>
+#include <geometry_msgs/Quaternion.h>
 #include <image_transport/image_transport.h>
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/image_encodings.h>
+
+#include "aruco.h"
+#include "cvdrawingutils.h"
+
+
 using namespace cv;
 using namespace aruco;
 string TheInputVideo;
@@ -130,15 +135,25 @@ bool readArguments ( int argc,char **argv )
     return true;
 }
 
+
+// XX (mtourne): doesnt' convert nicely to boost type
+// static const double COV[] = {0.1, 0, 0, 0, 0, 0,
+//                              0, 0.1, 0, 0, 0, 0,
+//                              0, 0, 0.1, 0, 0, 0,
+//                              0, 0, 0, 99999, 0, 0,  // large covariance on rot x
+//                              0, 0, 0, 0, 99999, 0,  // large covariance on rot y
+//                              0, 0, 0, 0, 0, 99999};  // large covariance on rot z
+
 int main(int argc,char **argv){
 	// Show images, press "SPACE" to diable image
-        // rendering to save CPU time
-        update_images = true;
+    // rendering to save CPU time
+    update_images = true;
 
 	if (readArguments(argc,argv)==false) {
 		return 0;
 	}
 
+    // XX (read straight from openc)
 	// TheVideoCapturer.open(0);
 	// // Check video is open
 	// if (!TheVideoCapturer.isOpened()) {
@@ -148,7 +163,7 @@ int main(int argc,char **argv){
 
 
 	// ROS messaging init
-	ros::init(argc, argv, "aruco_tf_publisher");
+	ros::init(argc, argv, "aruco_ros");
 	ros::NodeHandle n;
 	ros::Rate loop_rate(100);
 
@@ -186,125 +201,83 @@ int main(int argc,char **argv){
 	char key=0;
 	int index=0;
 
-	// Publish pose message and buffer up to 100 messages
-	ros::Publisher pose_pub = n.advertise<geometry_msgs::Pose>("aruco_pose", 100);
-	tf::TransformBroadcaster broadcaster;
+    // Odometry publisher
+	ros::Publisher pub = n.advertise<nav_msgs::Odometry>("/vo", 1000);
+    double position[3], orientation[4];
+    nav_msgs::Odometry odom;
+    odom.header.seq = index;
+    odom.header.stamp = ros::Time::now();
+    odom.header.frame_id = "odom_combined";
+    odom.child_frame_id = "base_footprint";
+    odom.pose.covariance = {0.1, 0, 0, 0, 0, 0,
+                            0, 0.1, 0, 0, 0, 0,
+                            0, 0, 0.1, 0, 0, 0,
+                            0, 0, 0, 99999, 0, 0,  // large covariance on rot x
+                            0, 0, 0, 0, 99999, 0,  // large covariance on rot y
+                            0, 0, 0, 0, 0, 99999};  // large covariance on rot z
+
 
 	// Capture until press ESC or until the end of the video
 	while ((key != 'x') && (key!=27) && ros::ok()){
 
         ros::spinOnce();
 
-        if (image_topic.isImageNew()) {
-            TheInputImage = image_topic.getCurrentImage();
-			index++; // Number of images captured
-			double tick = (double)getTickCount();// For checking the speed
-
-            // Detection of markers in the image passed
-			MDetector.detect(TheInputImage,TheMarkers,TheCameraParameters,TheMarkerSize);
-
-			// Check the speed by calculating the mean speed of all iterations
-			AvrgTime.first+=((double)getTickCount()-tick)/getTickFrequency();
-			AvrgTime.second++;
-
-			// Show the detection time
-			// cout<<"Time detection="<<1000*AvrgTime.first/AvrgTime.second<<" milliseconds"<<endl;
-
-            // Copy image
-            TheInputImage.copyTo(TheInputImageCopy);
-
-			geometry_msgs::Pose msg;
-
-			double x_t, y_t, z_t;
-			float roll,yaw,pitch;
-			bool found = (TheMarkers.size()>0)?true:false;
-
-			if (found)  {
-				x_t = -TheMarkers[0].Tvec.at<Vec3f>(0,0)[0];
-				y_t = TheMarkers[0].Tvec.at<Vec3f>(0,0)[1];
-				z_t = TheMarkers[0].Tvec.at<Vec3f>(0,0)[2];
-				// printf("%4.2f %4.2f %4.2f\n",x_t,y_t,z_t);
-
-				cv::Mat rot_mat(3,3,cv::DataType<float>::type);
-				// You need to apply cv::Rodrigues() in order to obatain angles wrt to camera coords
-				cv::Rodrigues(TheMarkers[0].Rvec,rot_mat);
-
-				pitch   = -atan2(rot_mat.at<float>(2,0), rot_mat.at<float>(2,1));
-				yaw     = acos(rot_mat.at<float>(2,2));
-				roll    = -atan2(rot_mat.at<float>(0,2), rot_mat.at<float>(1,2));
-				printf( "Angles (deg) found: roll:%5.2f pitch:%5.2f yaw:%5.2f \n",
-                        roll, pitch, yaw);
-			}else {
-				// x_t = 0.0;
-				// y_t = 0.0;
-				// z_t = -10.0;
-				// yaw  = 0.0;
-				// roll = 0.0;
-				// pitch = 0.0;
-                printf("Marker _NOT_ found\n");
-			}
-
-			// Marker rotation should be initially zero (just for convenience)
-			float p_off = CV_PI;
-			float r_off = CV_PI/2;
-			float y_off = CV_PI/2;
-
-			// See: http://en.wikipedia.org/wiki/Flight_dynamics
-			if (found){
-				printf( "Angles (deg) wrt Flight Dynamics: roll:%5.2f pitch:%5.2f yaw:%5.2f \n",
-                        (roll-r_off)*(180.0/CV_PI), (pitch-p_off)*(180.0/CV_PI), (yaw-y_off)*(180.0/CV_PI));
-				printf( "\tMarker distance in metres: x_d:%f\ty_d:%f\tz_d:%f\n", x_t, y_t, z_t);
-			}
-
-			if (ros::ok()){
-				// Publish TF message including the offsets
-				tf::Quaternion quat = tf::createQuaternionFromRPY(roll-p_off, pitch+p_off, yaw-y_off);
-				broadcaster.sendTransform(tf::StampedTransform(tf::Transform(quat, tf::Vector3(x_t, y_t, z_t)), ros::Time::now(),"camera", "marker"));
-
-				// Now publish the pose message, remember the offsets
-				msg.position.x = x_t;
-				msg.position.y = y_t;
-				msg.position.z = z_t;
-				geometry_msgs::Quaternion p_quat = tf::createQuaternionMsgFromRollPitchYaw(roll-r_off, pitch+p_off, yaw-y_off);
-				msg.orientation = p_quat;
-				pose_pub.publish(msg);
-				ros::spinOnce();
-			}
-
-			// Print other rectangles that contains no valid markers
-			/** for (unsigned int i=0;i<MDetector.getCandidates().size();i++) {
-				aruco::Marker m( MDetector.getCandidates()[i],999);
-				m.draw(TheInputImageCopy,cv::Scalar(255,0,0));
-			}*/
-			// Draw a 3d cube in each marker if there is 3d info
-
-            if (TheCameraParameters.isValid()){
-				for (unsigned int i=0;i<TheMarkers.size();i++) {
-					CvDrawingUtils::draw3dCube(TheInputImageCopy,
-                                               TheMarkers[i],
-                                               TheCameraParameters);
-					CvDrawingUtils::draw3dAxis(TheInputImageCopy,
-                                               TheMarkers[i],
-                                               TheCameraParameters);
-				}
-			}
-
-			// Show input with augmented information and the thresholded image
-			if (update_images) {
-				cv::imshow("INPUT IMAGE",TheInputImageCopy);
-				cv::imshow("THRESHOLD IMAGE",MDetector.getThresholdedImage());
-			}
-		}
-        // else {
-        //     printf("retrieve failed\n");
-		// }
-
 		key=cv::waitKey(1);
 
-                // If space is hit, don't render the image.
+        // If space is hit, don't render the image.
 		if (key == ' '){
 			update_images = !update_images;
 		}
+
+        if (!image_topic.isImageNew()) {
+            continue;
+        }
+
+        TheInputImage = image_topic.getCurrentImage();
+        index++; // Number of images captured
+        double tick = (double)getTickCount();// For checking the speed
+
+        // Detection of markers in the image passed
+        MDetector.detect(TheInputImage,TheMarkers,TheCameraParameters,TheMarkerSize);
+
+        // Check the speed by calculating the mean speed of all iterations
+        AvrgTime.first+=((double)getTickCount()-tick)/getTickFrequency();
+        AvrgTime.second++;
+
+        // Show the detection time
+        // cout<<"Time detection="<<1000*AvrgTime.first/AvrgTime.second<<" milliseconds"<<endl;
+
+        // Publish the markers
+        for (unsigned int i=0;i<TheMarkers.size();i++) {
+            cout<<TheMarkers[i]<<endl;
+            TheMarkers[i].draw(TheInputImageCopy,Scalar(0,0,255),1);
+            TheMarkers[i].OgreGetPoseParameters(position, orientation);
+            geometry_msgs::Point p;
+            p.x = position[0];
+            p.y = position[1];
+            p.z = position[2];
+            odom.pose.pose.position = p;
+            geometry_msgs::Quaternion q;
+            q.x = orientation[0];
+            q.y = orientation[1];
+            q.z = orientation[2];
+            q.w = orientation[3];
+            odom.pose.pose.orientation = q;
+            pub.publish(odom);
+        }
+
+        // Copy image
+        TheInputImage.copyTo(TheInputImageCopy);
+        if (TheCameraParameters.isValid())
+            for (unsigned int i=0;i<TheMarkers.size();i++) {
+                CvDrawingUtils::draw3dCube(TheInputImageCopy,TheMarkers[i],TheCameraParameters);
+                CvDrawingUtils::draw3dAxis(TheInputImageCopy,TheMarkers[i],TheCameraParameters);
+            }
+
+        if (update_images) {
+            cv::imshow("INPUT IMAGE",TheInputImageCopy);
+            cv::imshow("THRESHOLD IMAGE",MDetector.getThresholdedImage());
+        }
 	}
 }
 
