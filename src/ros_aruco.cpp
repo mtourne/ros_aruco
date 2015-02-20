@@ -147,7 +147,7 @@ bool readArguments ( int argc,char **argv )
 int main(int argc,char **argv){
 	// Show images, press "SPACE" to diable image
     // rendering to save CPU time
-    update_images = true;
+    update_images = false;
 
 	if (readArguments(argc,argv)==false) {
 		return 0;
@@ -188,67 +188,70 @@ int main(int argc,char **argv){
 		MDetector.pyrDown(ThePyrDownLevel);
 
 	// Create gui
-	cv::namedWindow("THRESHOLD IMAGE",1);
-	cv::namedWindow("INPUT IMAGE",1);
+	if (update_images) {
+	  cv::namedWindow("THRESHOLD IMAGE",1);
+	  cv::namedWindow("INPUT IMAGE",1);
+	  
+	  MDetector.getThresholdParams( ThresParam1,ThresParam2);
+	  MDetector.setCornerRefinementMethod(MarkerDetector::LINES);
+	  
+	  iThresParam1=ThresParam1;
+	  iThresParam2=ThresParam2;
+	  cv::createTrackbar("ThresParam1", "INPUT IMAGE",&iThresParam1, 13, cvTackBarEvents);
+	  cv::createTrackbar("ThresParam2", "INPUT IMAGE",&iThresParam2, 13, cvTackBarEvents);
+	}
 
-	MDetector.getThresholdParams( ThresParam1,ThresParam2);
-	MDetector.setCornerRefinementMethod(MarkerDetector::LINES);
-
-	iThresParam1=ThresParam1;
-	iThresParam2=ThresParam2;
-	cv::createTrackbar("ThresParam1", "INPUT IMAGE",&iThresParam1, 13, cvTackBarEvents);
-	cv::createTrackbar("ThresParam2", "INPUT IMAGE",&iThresParam2, 13, cvTackBarEvents);
 	char key=0;
 	int index=0;
 
-    // Odometry publisher
+	// Odometry publisher
 	ros::Publisher pub = n.advertise<nav_msgs::Odometry>("/vo", 1000);
-    double position[3], orientation[4];
-    nav_msgs::Odometry odom;
-    odom.header.seq = index;
-    odom.header.stamp = ros::Time::now();
-    odom.header.frame_id = "odom_combined";
-    odom.child_frame_id = "base_footprint";
-    odom.pose.covariance = {0.1, 0, 0, 0, 0, 0,
-                            0, 0.1, 0, 0, 0, 0,
-                            0, 0, 0.1, 0, 0, 0,
-                            0, 0, 0, 99999, 0, 0,  // large covariance on rot x
-                            0, 0, 0, 0, 99999, 0,  // large covariance on rot y
-                            0, 0, 0, 0, 0, 99999};  // large covariance on rot z
+	double position[3], orientation[4];
+	nav_msgs::Odometry odom;
+	odom.header.seq = index;
+	odom.header.stamp = ros::Time::now();
+	odom.header.frame_id = "odom_combined";
+	odom.child_frame_id = "base_footprint";
+	odom.pose.covariance = {0.1, 0, 0, 0, 0, 0,
+				0, 0.1, 0, 0, 0, 0,
+				0, 0, 0.1, 0, 0, 0,
+				0, 0, 0, 99999, 0, 0,  // large covariance on rot x
+				0, 0, 0, 0, 99999, 0,  // large covariance on rot y
+				0, 0, 0, 0, 0, 99999};  // large covariance on rot z
 
 
 	// Capture until press ESC or until the end of the video
 	while ((key != 'x') && (key!=27) && ros::ok()){
 
-        ros::spinOnce();
-
-		key=cv::waitKey(1);
+	  ros::spinOnce();
+	  
+	  key=cv::waitKey(1);
 
         // If space is hit, don't render the image.
-		if (key == ' '){
-			update_images = !update_images;
-		}
-
-        if (!image_topic.isImageNew()) {
+	  if (key == ' '){
+	    update_images = !update_images;
+	  }
+	  
+	  if (!image_topic.isImageNew()) {
             continue;
-        }
-
-        TheInputImage = image_topic.getCurrentImage();
-        index++; // Number of images captured
-        double tick = (double)getTickCount();// For checking the speed
-
-        // Detection of markers in the image passed
-        MDetector.detect(TheInputImage,TheMarkers,TheCameraParameters,TheMarkerSize);
-
-        // Check the speed by calculating the mean speed of all iterations
-        AvrgTime.first+=((double)getTickCount()-tick)/getTickFrequency();
-        AvrgTime.second++;
-
-        // Show the detection time
-        // cout<<"Time detection="<<1000*AvrgTime.first/AvrgTime.second<<" milliseconds"<<endl;
-
-        // Publish the markers
-        for (unsigned int i=0;i<TheMarkers.size();i++) {
+	  }
+	  
+	  TheInputImage = image_topic.getCurrentImage();
+	  index++; // Number of images captured
+	  double tick = (double)getTickCount();// For checking the speed
+	  
+	  // Detection of markers in the image passed
+	  MDetector.detect(TheInputImage,TheMarkers,TheCameraParameters,TheMarkerSize);
+	  
+	  // Check the speed by calculating the mean speed of all iterations
+	  AvrgTime.first+=((double)getTickCount()-tick)/getTickFrequency();
+	  AvrgTime.second++;
+	  
+	  // Show the detection time
+	  // cout<<"Time detection="<<1000*AvrgTime.first/AvrgTime.second<<" milliseconds"<<endl;
+	  
+	  // Publish the markers
+	  for (unsigned int i=0;i<TheMarkers.size();i++) {
             cout<<TheMarkers[i]<<endl;
             TheMarkers[i].draw(TheInputImageCopy,Scalar(0,0,255),1);
             TheMarkers[i].OgreGetPoseParameters(position, orientation);
@@ -258,23 +261,30 @@ int main(int argc,char **argv){
             p.z = position[2];
             odom.pose.pose.position = p;
             geometry_msgs::Quaternion q;
-            q.x = orientation[0];
-            q.y = orientation[1];
-            q.z = orientation[2];
-            q.w = orientation[3];
+	    // OgreGetPose param, puts w in orientation[0]
+            q.w = orientation[0];
+            q.x = orientation[1];
+            q.y = orientation[2];
+            q.z = orientation[3];
+            // XXX: hijack one of the off-diagonal element
+            //  of the covariance to publish the id
+            //  of the fiducial
+            //  (I should really make my own message for this).
+            odom.pose.covariance[1] = TheMarkers[i].id;
             odom.pose.pose.orientation = q;
             pub.publish(odom);
         }
 
-        // Copy image
-        TheInputImage.copyTo(TheInputImageCopy);
-        if (TheCameraParameters.isValid())
+        if (update_images) {
+	  
+	  // Copy image
+	  TheInputImage.copyTo(TheInputImageCopy);
+	  if (TheCameraParameters.isValid())
             for (unsigned int i=0;i<TheMarkers.size();i++) {
-                CvDrawingUtils::draw3dCube(TheInputImageCopy,TheMarkers[i],TheCameraParameters);
-                CvDrawingUtils::draw3dAxis(TheInputImageCopy,TheMarkers[i],TheCameraParameters);
+	      CvDrawingUtils::draw3dCube(TheInputImageCopy,TheMarkers[i],TheCameraParameters);
+	      CvDrawingUtils::draw3dAxis(TheInputImageCopy,TheMarkers[i],TheCameraParameters);
             }
 
-        if (update_images) {
             cv::imshow("INPUT IMAGE",TheInputImageCopy);
             cv::imshow("THRESHOLD IMAGE",MDetector.getThresholdedImage());
         }
